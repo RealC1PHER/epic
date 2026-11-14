@@ -95,6 +95,19 @@ cargo test --locked -p epic_servers --lib -- epic::sync common::   # 68 tests
 
 The binary still reports `epic 4.1.2` / user agent `MW/Epic 4.1.2`; only the commits above differ.
 
+## Support this work
+
+This fork is maintained in spare time by a small solo miner: testing on mainnet, measuring, and
+writing up the results for the Epic Cash team. If it helped you and you'd like to support it, a
+donation is welcome, but never expected.
+
+| Coin | Address |
+|---|---|
+| **Epic Cash (EPIC)** | `esYeazToEW75rLTQPcY7fipqP6yYv3b8LZdqxrjyHLB7KvNfUqCJ@epicbox.epiccash.com` |
+| **Bitcoin (BTC)** | `bc1qkjekqtj5j9gxcm98prqugmqeqpnyzp3psc3z03uxrsk3gqvtvdcq7nl24q` |
+
+Thank you!
+
 ## License
 
 Unchanged from upstream (Apache-2.0). Copyright of the original code remains with the Epic Cash
