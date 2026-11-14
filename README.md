@@ -1,5 +1,6 @@
 > **Testing fork:** this is RealC1PHER's fork of Epic Cash v4.1.2 with candidate fixes for the
-> 4.x body_sync stalls and compact-block propagation (testing phase, not an official release).
+> 4.x body_sync stalls and compact-block propagation (testing phase, not an official release;
+> not affiliated with or endorsed by the Epic Cash team; provided as is, use at your own risk).
 > See **[FORK.md](FORK.md)** for what changed, why, and the results so far. Discussion:
 > [EpicCash/epic PR #161](https://github.com/EpicCash/epic/pull/161) and [#162](https://github.com/EpicCash/epic/pull/162).
 >

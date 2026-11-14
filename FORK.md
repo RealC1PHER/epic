@@ -2,8 +2,17 @@
 
 > **Status: testing.** This fork exists so the Epic Cash team can see exactly what we
 > changed and why. It is **not** an official release and should not be used in production
-> without your own review. We will report results on
-> [EpicCash/epic PR #161](https://github.com/EpicCash/epic/pull/161).
+> without your own review. We report results on
+> [EpicCash/epic PR #161](https://github.com/EpicCash/epic/pull/161) and
+> [#162](https://github.com/EpicCash/epic/pull/162).
+>
+> **Disclaimer.** This is an independent, experimental test build. It is **not affiliated with,
+> reviewed, or endorsed by the Epic Cash team**, and parts of it differ from what the Epic
+> maintainers have accepted (see the note under section 1). It is provided **"as is", without
+> warranty of any kind**, under the Apache License 2.0 (see sections 7 and 8 of `LICENSE`). You run
+> it entirely at your own risk; the authors are not liable for any loss, including lost blocks,
+> rewards, or funds. For anything that matters, use the
+> [official Epic Cash releases](https://github.com/EpicCash/epic/releases).
 
 We run a mainnet solo-mining node on Epic v4.1.2. After the upgrade the node fell behind on
 almost every new block ("body_sync" flapping), our miners worked on stale jobs, and about
@@ -44,6 +53,17 @@ seconds earlier. v3.6.0 has no such filter.
   Full header and block validation still applies. A debug line
   `Accepting pushed compact block … without a prior header` replaces the silent drop.
 
+> **Note: maintainer review.** In the review of
+> [#162](https://github.com/EpicCash/epic/pull/162) the Epic maintainers asked to keep the strict
+> same-peer header-first check on receive. Their view is that the header-first broadcast for mined
+> blocks (first bullet) is enough to fix propagation once nodes run it. The second bullet,
+> accepting a pushed compact block without a prior header, stays in this testing fork only as a
+> **transitional workaround** while most miners still send bare compact blocks. It has a known
+> trade-off: a peer can make the node do extra validation work by attaching data to a header
+> another peer announced. Full validation still applies, so no invalid block is accepted, but
+> the node can be slowed down. We are testing a stricter variant that closes that case. Until the
+> maintainers accept something like it, treat the second bullet as experimental.
+
 ## 2. body_sync asked peers that may not have the block, and disconnected them (fz2)
 
 **Root cause.** v3.6.0 requested missing bodies from `more_work_peers()`: peers advertising more
@@ -74,6 +94,7 @@ its body (stalls ≥ 5 s).
 | v4.1.2-fz1 (+ PR #161) | ~1 h | 33 | 29 min | 51 % |
 | v4.1.2-fz2 | ~40 min | ~25 | ~8 min | ~87 %, every stall 17–19 s |
 | v4.1.2-fz3 | first ~35 min | 3 stalls (≤ 19 s) | — | ~98 %, header→body 0.1–0.7 s |
+| v4.1.2-fz3 | first 12.1 h (Nov 14 00:56–13:03 CET) | 3.4 | 0.93 min | 98.45 %, longest stall 34 s |
 
 - Block-download timeouts dropped from 30–120 per hour to almost none.
 - The first block we found on fz3 (height 3796795) was broadcast header-first, the network built
