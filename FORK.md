@@ -29,9 +29,11 @@ Every branch starts from the official tag `v4.1.2` and adds exactly the commits 
 | `v4.1.2-fz1` | `frenziez/v4.1.2-sync-fix` | `f6aaa90`: the upstream fix from PR #161 (keep `no_sync` during in-flight validation; request the compact block during `BodySync`) |
 | `v4.1.2-fz2` | `frenziez/v4.1.2-fz2` | `1877807`: body_sync peer selection (see 2 below) |
 | `v4.1.2-fz3` | `frenziez/v4.1.2-fz3` (default) | `c5489de`: compact block propagation (see 1 below) |
+| `v4.1.2-fz4` | `frenziez/v4.1.2-fz4` (**testing**) | `cdff6dd`: strict same-peer header-first restored; a bare compact block is handled as a header announcement (see 1b below) |
 
 Full diff against the official release:
-[`v4.1.2...frenziez/v4.1.2-fz3`](https://github.com/RealC1PHER/epic/compare/v4.1.2...frenziez/v4.1.2-fz3)
+[`v4.1.2...frenziez/v4.1.2-fz3`](https://github.com/RealC1PHER/epic/compare/v4.1.2...frenziez/v4.1.2-fz3) ·
+[`v4.1.2...frenziez/v4.1.2-fz4`](https://github.com/RealC1PHER/epic/compare/v4.1.2...frenziez/v4.1.2-fz4)
 
 ## 1. Pushed compact blocks from the miner were dropped (fz3)
 
@@ -61,8 +63,32 @@ seconds earlier. v3.6.0 has no such filter.
 > **transitional workaround** while most miners still send bare compact blocks. It has a known
 > trade-off: a peer can make the node do extra validation work by attaching data to a header
 > another peer announced. Full validation still applies, so no invalid block is accepted, but
-> the node can be slowed down. We are testing a stricter variant that closes that case. Until the
-> maintainers accept something like it, treat the second bullet as experimental.
+> the node can be slowed down. We are testing a stricter variant that closes that case (fz4, see
+> 1b). Until the maintainers accept something like it, treat the second bullet as experimental.
+
+## 1b. Strict header-first kept, bare compact blocks handled as announcements (fz4, testing)
+
+**Why.** Following the maintainer review on #162, fz4 drops fz3's "accept from any peer" and
+restores the strict v4.0.0 rule: a compact block is only processed from the peer that announced
+its header. On its own that would bring back the 17–19 s stall for every block a miner pushes
+without a header, until every miner and pool sends header first (fz3's first bullet, kept).
+
+**Change (`cdff6dd`, only `servers/src/common/adapters.rs::compact_block_received`).**
+
+| A compact block arrives and its header was… | fz4 does |
+|---|---|
+| announced by **this same peer** | process it (strict rule, unchanged) |
+| announced **only by other peers** | drop it; the block comes from its announcer (strict rule) |
+| announced by **nobody yet** (a miner's bare push) | handle it as this peer's **header announcement**: validate and record the header for this peer, then request the compact block back from the **same peer**, which then passes the strict check |
+
+So the compact-block processing path still only runs for the header's announcer. A peer that sends
+an invalid header or block data is banned as before (`BadBlockHeader` / `BadCompactBlock`). The only
+extra cost is one round trip and the block data being sent twice for a bare push. A pure decision
+function `compact_block_admission()` has three unit tests, one per row above.
+
+**Status.** Running on our mainnet node since 2026-11-14 21:29 CET. In the first minutes every bare
+push resolved in 0.4–3 s (fz2 without this: 17–19 s). Not proposed upstream yet; we'll report after
+a longer test.
 
 ## 2. body_sync asked peers that may not have the block, and disconnected them (fz2)
 
