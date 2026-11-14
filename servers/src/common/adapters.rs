@@ -237,23 +237,38 @@ where
 			return Ok(true);
 		}
 
-		// fz3: accept a pushed compact block from any peer, as v3.6.0 did.
-		// The v4.0.0 "strict header first" rule only accepted a compact block from a
-		// peer that had sent its header first — but the node that MINES a block
-		// broadcasts the compact block directly without a header, so every freshly
-		// mined block was silently dropped by all 4.x direct peers and only spread via
-		// slow sync probes (~10-20 s per block, and our own found blocks orphaned).
-		// The block still goes through full header + block validation below.
-		let seen_header_from_peer = {
+		// Strict header first: a compact block is only processed from the peer that
+		// announced its header. A compact block whose header we have not seen from
+		// anyone yet (a miner pushing a freshly found block without a header) counts as
+		// that peer's header announcement: the header is validated and recorded for this
+		// peer, and the compact block is requested back from the same peer, so it then
+		// passes this check. A compact block for a header announced only by other peers
+		// is dropped; the block comes from its announcer.
+		let admission = {
 			let seen = self.recently_seen_headers.lock().unwrap();
-			seen.get(&cb_hash)
-				.map_or(false, |m| m.contains_key(&peer_info.addr))
+			compact_block_admission(seen.get(&cb_hash), &peer_info.addr)
 		};
-		if !seen_header_from_peer {
-			debug!(
-				"Accepting pushed compact block {} at {} from {} without a prior header",
-				cb_hash, cb.header.height, peer_info.addr
-			);
+		match admission {
+			CompactBlockAdmission::Process => {}
+			CompactBlockAdmission::Drop => return Ok(true),
+			CompactBlockAdmission::TreatAsHeader => {
+				debug!(
+					"compact block {} at {} from {} without a prior header, handling it as a header announcement",
+					cb_hash, cb.header.height, peer_info.addr
+				);
+				if !self.header_received(cb.header.clone(), peer_info)? {
+					return Ok(false);
+				}
+				if matches!(
+					self.sync_state.status(),
+					SyncStatus::NoSync | SyncStatus::BodySync { .. }
+				) {
+					if let Some(peer) = self.peers().get_connected_peer(peer_info.addr) {
+						let _ = peer.send_compact_block_request(cb_hash);
+					}
+				}
+				return Ok(true);
+			}
 		}
 
 		debug!(
@@ -1177,9 +1192,70 @@ impl pool::BlockChain for PoolToChainAdapter {
 	}
 }
 
+/// What to do with a received compact block, given the peers we have seen its
+/// header from (`None` = from nobody).
+#[derive(Debug, PartialEq)]
+enum CompactBlockAdmission {
+	/// The header came from this same peer: process the compact block.
+	Process,
+	/// Nobody announced the header yet: handle the compact block as this peer's
+	/// header announcement and request the block back from it.
+	TreatAsHeader,
+	/// The header was announced by other peers only: ignore this compact block.
+	Drop,
+}
+
+fn compact_block_admission(
+	seen_from: Option<&HashMap<p2p::PeerAddr, Instant>>,
+	peer: &p2p::PeerAddr,
+) -> CompactBlockAdmission {
+	match seen_from {
+		Some(m) if m.contains_key(peer) => CompactBlockAdmission::Process,
+		Some(m) if !m.is_empty() => CompactBlockAdmission::Drop,
+		_ => CompactBlockAdmission::TreatAsHeader,
+	}
+}
+
 #[cfg(test)]
 mod test {
 	use super::*;
+
+	// PeerAddr compares non-loopback addresses by IP only, so use distinct IPs.
+	fn addr(n: u8) -> p2p::PeerAddr {
+		p2p::PeerAddr(std::net::SocketAddr::from(([10, 0, 0, n], 3414)))
+	}
+
+	#[test]
+	fn compact_block_from_header_announcer_is_processed() {
+		let mut m = HashMap::new();
+		m.insert(addr(1), Instant::now());
+		assert_eq!(
+			compact_block_admission(Some(&m), &addr(1)),
+			CompactBlockAdmission::Process
+		);
+	}
+
+	#[test]
+	fn compact_block_for_header_announced_by_another_peer_is_dropped() {
+		let mut m = HashMap::new();
+		m.insert(addr(1), Instant::now());
+		assert_eq!(
+			compact_block_admission(Some(&m), &addr(2)),
+			CompactBlockAdmission::Drop
+		);
+	}
+
+	#[test]
+	fn compact_block_for_unannounced_header_is_handled_as_header() {
+		assert_eq!(
+			compact_block_admission(None, &addr(1)),
+			CompactBlockAdmission::TreatAsHeader
+		);
+		assert_eq!(
+			compact_block_admission(Some(&HashMap::new()), &addr(1)),
+			CompactBlockAdmission::TreatAsHeader
+		);
+	}
 
 	#[test]
 	fn forced_pow_threshold_saturates_below_window() {
