@@ -29,3 +29,21 @@ release/
 *.code-workspace
 etc/*.tar.gz
 etc/*.tar.gz.asc
+
+# Fork: never commit local node/wallet data, configs or secrets
+chain_data/
+chain_data.bak*/
+*.log
+epic-server.toml
+epic-wallet.toml
+*.toml.bak*
+.api_secret
+.owner_api_secret
+.foreign_api_secret
+*.seed
+*.key
+*.pem
+.env
+.env.*
+*.bundle
+epic.build*.json
