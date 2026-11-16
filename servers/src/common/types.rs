@@ -298,6 +298,11 @@ pub struct StratumServerConfig {
 	/// Attributes the reward to a random private key instead of contacting the
 	/// wallet receiver. Mostly used for tests.
 	pub burn_reward: bool,
+
+	/// fz5: add the real difficulty of every accepted share to the submit reply
+	/// (top-level `share_difficulty`). Only for a pool proxy in front of the node,
+	/// which checks it against the difficulty it assigned. Off when absent.
+	pub pool_proxy_reply: Option<bool>,
 }
 
 impl Default for StratumServerConfig {
@@ -313,6 +318,7 @@ impl Default for StratumServerConfig {
 				progpow_minimum_share_difficulty: consensus::MIN_DIFFICULTY_PROGPOW,
 				enable_stratum_server: Some(true),
 				stratum_server_addr: Some("127.0.0.1:3416".to_string()),
+				pool_proxy_reply: None,
 			},
 			_ => StratumServerConfig {
 				wallet_listener_url: "http://127.0.0.1:3415".to_string(),
@@ -323,6 +329,7 @@ impl Default for StratumServerConfig {
 				progpow_minimum_share_difficulty: consensus::MIN_DIFFICULTY_PROGPOW,
 				enable_stratum_server: Some(false),
 				stratum_server_addr: Some("127.0.0.1:3416".to_string()),
+				pool_proxy_reply: None,
 			},
 		}
 	}

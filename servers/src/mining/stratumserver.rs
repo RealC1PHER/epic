@@ -76,6 +76,8 @@ struct RpcResponse {
 	method: String,
 	result: Option<Value>,
 	error: Option<Value>,
+	#[serde(skip_serializing_if = "Option::is_none", default)]
+	share_difficulty: Option<u64>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -238,6 +240,7 @@ struct Handler {
 	sync_state: Arc<SyncState>,
 	chain: Arc<chain::Chain>,
 	current_state: Arc<RwLock<State>>,
+	pool_proxy_reply: bool,
 }
 
 impl Handler {
@@ -247,6 +250,7 @@ impl Handler {
 		sync_state: Arc<SyncState>,
 		minimum_share_difficulty: DifficultyNumber,
 		chain: Arc<chain::Chain>,
+		pool_proxy_reply: bool,
 	) -> Self {
 		Handler {
 			id,
@@ -254,6 +258,7 @@ impl Handler {
 			sync_state,
 			chain,
 			current_state: Arc::new(RwLock::new(State::new(minimum_share_difficulty))),
+			pool_proxy_reply,
 		}
 	}
 	pub fn from_stratum(stratum: &StratumServer) -> Self {
@@ -280,21 +285,24 @@ impl Handler {
 			stratum.sync_state.clone(),
 			minimum_share_difficulty,
 			stratum.chain.clone(),
+			stratum.config.pool_proxy_reply.unwrap_or(false),
 		)
 	}
 	async fn handle_rpc_requests(&self, request: RpcRequest, worker_id: usize) -> String {
 		self.workers.last_seen(worker_id);
 		debug!("request: {:?}", request);
+		let mut share_difficulty = None;
 		// Call the handler function for requested method
 		let response = match request.method.as_str() {
 			"login" => self.handle_login(request.params, worker_id),
 			"submit" => {
 				let res = self.handle_submit(request.params, worker_id);
 				// this key_id has been used now, reset
-				if let Ok((_, true)) = res {
+				if let Ok((_, true, _)) = res {
 					self.current_state.write().current_key_id = None;
 				}
-				res.map(|(v, _)| v)
+				share_difficulty = reply_share_difficulty(self.pool_proxy_reply, &res);
+				res.map(|(v, _, _)| v)
 			}
 			"keepalive" => self.handle_keepalive(),
 			"getjobtemplate" => {
@@ -319,6 +327,7 @@ impl Handler {
 				method: request.method,
 				result: None,
 				error: Some(rpc_error.into()),
+				share_difficulty: None,
 			},
 			Ok(response) => RpcResponse {
 				id: request.id,
@@ -326,6 +335,7 @@ impl Handler {
 				method: request.method,
 				result: Some(response),
 				error: None,
+				share_difficulty,
 			},
 		};
 		serde_json::to_string(&resp).unwrap()
@@ -485,7 +495,7 @@ impl Handler {
 		&self,
 		params: Option<Value>,
 		worker_id: usize,
-	) -> Result<(Value, bool), RpcError> {
+	) -> Result<(Value, bool, u64), RpcError> {
 		// Validate parameters
 		let params: SubmitParams = parse_params(params)?;
 
@@ -639,6 +649,7 @@ impl Handler {
 		return Ok((
 			serde_json::to_value(submit_response).unwrap(),
 			share_is_block,
+			share_difficulty,
 		));
 	} // handle submit a solution
 
@@ -809,7 +820,15 @@ async fn accept_connections(listen_addr: SocketAddr, handler: Arc<Handler>) {
 
 	loop {
 		let handler = handler.clone();
-		let (socket, _) = listener.accept().await.unwrap();
+		let socket = match listener.accept().await {
+			Ok((socket, _)) => socket,
+			Err(e) => {
+				// fz5: an accept error (e.g. out of file descriptors) must not kill the stratum server
+				error!("Stratum: accept failed: {}", e);
+				tokio::time::sleep(Duration::from_millis(100)).await;
+				continue;
+			}
+		};
 		// Spawn a task to process the connection
 		let (tx, mut rx) = mpsc::unbounded();
 
@@ -827,7 +846,7 @@ async fn accept_connections(listen_addr: SocketAddr, handler: Arc<Handler>) {
 
 		let h = handler.clone();
 		let read = async move {
-			while let Some(line) = reader.try_next().await.unwrap() {
+			while let Some(line) = next_line(&mut reader, worker_id).await {
 				let request = serde_json::from_str(&line)
 					.map_err(|e| error!("error serializing line: {}", e))?;
 
@@ -1074,6 +1093,33 @@ impl StratumServer {
 	} // fn run_loop()
 } // StratumServer
 
+// fz5: the real share difficulty for the submit reply, only with pool_proxy_reply on and
+// only for an accepted share.
+fn reply_share_difficulty(
+	pool_proxy_reply: bool,
+	res: &Result<(Value, bool, u64), RpcError>,
+) -> Option<u64> {
+	match res {
+		Ok((_, _, d)) if pool_proxy_reply => Some(*d),
+		_ => None,
+	}
+}
+
+// fz5: next line from a worker connection. A read error (e.g. the miner resets the TCP
+// connection) ends this connection instead of panicking on unwrap.
+async fn next_line<S>(reader: &mut S, worker_id: usize) -> Option<String>
+where
+	S: futures::Stream<Item = Result<String, tokio_util::codec::LinesCodecError>> + Unpin,
+{
+	match reader.try_next().await {
+		Ok(line) => line,
+		Err(e) => {
+			warn!("Worker {} read error, closing connection: {}", worker_id, e);
+			None
+		}
+	}
+}
+
 // Utility function to parse a JSON RPC parameter object, returning a proper
 // error if things go wrong.
 fn parse_params<T>(params: Option<Value>) -> Result<T, RpcError>
@@ -1083,4 +1129,75 @@ where
 	params
 		.and_then(|v| serde_json::from_value(v).ok())
 		.ok_or(RpcError::invalid_request())
+}
+
+#[cfg(test)]
+mod test {
+	use super::*;
+
+	fn submit_reply(share_difficulty: Option<u64>) -> Value {
+		let resp = RpcResponse {
+			id: Id::Integer(7),
+			jsonrpc: "2.0".to_string(),
+			method: "submit".to_string(),
+			result: Some(Value::from("ok")),
+			error: None,
+			share_difficulty,
+		};
+		serde_json::to_value(&resp).unwrap()
+	}
+
+	#[test]
+	fn submit_reply_unchanged_without_pool_proxy_reply() {
+		let v = submit_reply(None);
+		assert!(v.get("share_difficulty").is_none());
+		assert_eq!(v["result"], "ok");
+	}
+
+	#[test]
+	fn submit_reply_carries_real_share_difficulty() {
+		let v = submit_reply(Some(123_456));
+		assert_eq!(v["share_difficulty"], 123_456);
+		assert_eq!(v["result"], "ok");
+	}
+
+	#[test]
+	fn share_difficulty_only_for_accepted_submit_with_flag() {
+		let ok: Result<(Value, bool, u64), RpcError> = Ok((Value::from("ok"), false, 42));
+		assert_eq!(reply_share_difficulty(true, &ok), Some(42));
+		assert_eq!(reply_share_difficulty(false, &ok), None);
+		let low: Result<(Value, bool, u64), RpcError> = Err(RpcError::too_low_difficulty());
+		assert_eq!(reply_share_difficulty(true, &low), None);
+	}
+
+	#[test]
+	fn config_without_pool_proxy_reply_still_parses() {
+		let c: StratumServerConfig = serde_json::from_value(serde_json::json!({
+			"enable_stratum_server": true,
+			"stratum_server_addr": "127.0.0.1:3416",
+			"attempt_time_per_block": 15,
+			"cuckatoo_minimum_share_difficulty": 1,
+			"randomx_minimum_share_difficulty": 1,
+			"progpow_minimum_share_difficulty": 1,
+			"wallet_listener_url": "http://127.0.0.1:3415",
+			"burn_reward": false
+		}))
+		.unwrap();
+		assert_eq!(c.pool_proxy_reply, None);
+	}
+
+	#[tokio::test]
+	async fn connection_reset_ends_read_without_panic() {
+		let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let client = tokio::net::TcpStream::connect(listener.local_addr().unwrap())
+			.await
+			.unwrap();
+		let (server, _) = listener.accept().await.unwrap();
+		#[allow(deprecated)]
+		client.set_linger(Some(Duration::from_secs(0))).unwrap();
+		drop(client); // linger 0: the close sends a TCP RST, the server read gets ECONNRESET
+		tokio::time::sleep(Duration::from_millis(50)).await;
+		let (_writer, mut reader) = Framed::new(server, LinesCodec::new()).split::<String>();
+		assert_eq!(next_line(&mut reader, 0).await, None);
+	}
 }

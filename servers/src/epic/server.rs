@@ -586,6 +586,7 @@ impl Server {
 			cuckatoo_minimum_share_difficulty: 1,
 			randomx_minimum_share_difficulty: 1,
 			progpow_minimum_share_difficulty: 1,
+			pool_proxy_reply: None,
 		};
 
 		let mut miner = Miner::new(
